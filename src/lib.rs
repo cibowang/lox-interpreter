@@ -1,5 +1,24 @@
-use miette::{Error, LabeledSpan, Result};
-use std::{borrow::Cow, io::IsTerminal};
+use miette::{Diagnostic, Error, LabeledSpan, SourceSpan};
+use std::borrow::Cow;
+use thiserror::Error;
+
+#[derive(Diagnostic, Debug, Error)]
+#[error("Unexpected token '{token}' in input")]
+pub struct SingleTokenError {
+    #[source_code]
+    src: String,
+    pub token: char,
+
+    #[label = "This input char"]
+    err_span: SourceSpan,
+}
+
+impl SingleTokenError {
+    pub fn line(&self) -> usize {
+        let until_unrecognized = &self.src[..=self.err_span.offset()];
+        until_unrecognized.lines().count()
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Token<'de> {
@@ -177,13 +196,12 @@ impl<'de> Iterator for Lexer<'de> {
                 'a'..='z' | 'A'..='Z' | '_' => Started::Ident,
                 c if c.is_whitespace() => continue,
                 c => {
-                    return Some(Err(miette::miette! {
-                        labels = vec![
-                            LabeledSpan::at(self.byte - c.len_utf8()..self.byte, "this char"),
-                        ],
-                        "Uexpected token '{c}' in input",
+                    return Some(Err(SingleTokenError {
+                        src: self.whole.to_string(),
+                        token: c,
+                        err_span: SourceSpan::from(self.byte - c.len_utf8()..self.byte),
                     }
-                    .with_source_code(self.whole.to_string())))
+                    .into()))
                 }
             };
 
