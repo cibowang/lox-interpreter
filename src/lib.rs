@@ -1,5 +1,5 @@
 use miette::{Error, LabeledSpan, Result};
-use std::borrow::Cow;
+use std::{borrow::Cow, io::IsTerminal};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Token<'de> {
@@ -181,7 +181,7 @@ impl<'de> Iterator for Lexer<'de> {
                         labels = vec![
                             LabeledSpan::at(self.byte - c.len_utf8()..self.byte, "this char"),
                         ],
-                        "Uexpected token '{c}' input",
+                        "Uexpected token '{c}' in input",
                     }
                     .with_source_code(self.whole.to_string())))
                 }
@@ -214,8 +214,77 @@ impl<'de> Iterator for Lexer<'de> {
                         }))
                     }
                 }
-                Started::Ident => todo!(),
-                Started::Number => todo!(),
+                Started::Number => {
+                    let first_non_digit = c_onwards // NOTE: Already started parsing so first_non_digit should include c
+                        .find(|c| !matches!(c, '.' | '0'..='9')) // NOTE: '_'cannot
+                        // support
+                        .unwrap_or(c_onwards.len());
+                    let mut num_literal = &c_onwards[..first_non_digit];
+                    let mut dotted = literal.splitn(3, '.');
+                    match (dotted.next(), dotted.next(), dotted.next()) {
+                        (Some(one), Some(two), Some(_)) => {
+                            num_literal = &num_literal[..one.len() + 1 + two.len()];
+                        }
+                        (Some(one), Some(two), None) if two.is_empty() => {
+                            num_literal = &num_literal[..one.len()];
+                        }
+                        _ => {}
+                    }
+                    let extra_bytes = num_literal.len() - c.len_utf8();
+                    eprintln!("num literal: '{num_literal}'");
+                    self.remainder = &self.remainder[extra_bytes..];
+                    self.byte += extra_bytes;
+
+                    let n = match num_literal.parse() {
+                        Ok(n) => n,
+                        Err(e) => {
+                            return Some(Err(miette::miette! {
+                                labels = vec![
+                                    LabeledSpan::at(self.byte - num_literal.len()..self.byte, "this identifier literal"),
+                                ],
+                                "{e}",
+                            }.with_source_code(self.whole.to_string())));
+                        }
+                    };
+                    return Some(Ok(Token {
+                        origin: num_literal,
+                        kind: TokenKind::Number(n),
+                    }));
+                }
+                Started::Ident => {
+                    let first_non_identifier = c_onwards
+                        .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
+                        .unwrap_or(c_onwards.len());
+                    let identifier_literal = &c_onwards[..first_non_identifier];
+                    let extra_bytes = identifier_literal.len() - c.len_utf8();
+                    eprintln!("identifier literal: '{identifier_literal}'");
+                    self.remainder = &self.remainder[extra_bytes..];
+                    self.byte += extra_bytes;
+
+                    let kind = match identifier_literal {
+                        "and" => TokenKind::And,
+                        "class" => TokenKind::Class,
+                        "else" => TokenKind::Else,
+                        "false" => TokenKind::False,
+                        "for" => TokenKind::For,
+                        "fun" => TokenKind::Fun,
+                        "if" => TokenKind::If,
+                        "nil" => TokenKind::Nil,
+                        "or" => TokenKind::Or,
+                        "return" => TokenKind::Return,
+                        "super" => TokenKind::Super,
+                        "this" => TokenKind::This,
+                        "true" => TokenKind::True,
+                        "var" => TokenKind::Var,
+                        "while" => TokenKind::While,
+                        _ => TokenKind::Ident,
+                    };
+
+                    return Some(Ok(Token {
+                        origin: identifier_literal,
+                        kind,
+                    }));
+                }
                 Started::String => todo!(),
             };
         }
