@@ -1,0 +1,225 @@
+use crate::{
+    lex::{Token, TokenKind},
+    Lexer,
+};
+use miette::{Context, Diagnostic, Error, LabeledSpan, SourceSpan};
+use std::{borrow::Cow, fmt};
+
+pub struct Eof;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Op {
+    Plus,
+    Minus,
+    Star,
+    Bang,
+    Equal,
+    EqualEqual,
+    LessEqual,
+    GreaterEqual,
+    BangEqual,
+    Less,
+    Greater,
+    Slash,
+    And,
+    Or,
+    If,
+    For,
+    Print,
+    Class,
+    Fun,
+    Return,
+    Inheritance,
+    Var,
+    While,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Atom<'de> {
+    String(Cow<'de, str>),
+    Number,
+    Bool(bool),
+    Ident(&'de str),
+    Super,
+    This,
+    Nil,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+// Raw text
+pub enum Ast<'de> {
+    Atom(Atom<'de>),
+    Cons(Op, Vec<Ast<'de>>),
+}
+
+impl std::fmt::Display for Ast<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Ast::Atom(i) => write!(f, "{}", i),
+            Ast::Cons(head, rest) => {
+                write!(f, "({}", head)?;
+                for s in rest {
+                    write!(f, " {}", s)?
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parser<'de> {
+    whole: &'de str,
+    lexer: Lexer<'de>,
+}
+
+impl<'de> Parser<'de> {
+    pub fn new(input: &'de str) -> Self {
+        Parser {
+            whole: input,
+            lexer: Lexer::new(input),
+        }
+    }
+    // Parser to consume token
+    pub fn parse(self) -> Result<Ast<'de>, Error> {
+        self.parse_within()
+    }
+    pub fn parse_within(&mut self, target_op: Option<(Op, usize)>) -> Result<Ast<'de>, Error> {
+        let lhs = match self.lexer.next() {
+            Some(Ok(token)) => token,
+            None => return Ok(Ast::Atom(Atom::Nil)),
+            Some(Err(e)) => {
+                let msg = if let Some((op, arg_i)) = target_op {
+                    format!("Looking for #{arg_i} for {op:?}");
+                } else {
+                    "Looking for a statement".to_string();
+                };
+                return Err(e).wrap_err(msg);
+            }
+        };
+        let mut lhs = match lhs {
+            Token {
+                origin,
+                kind: TokenKind::String,
+            } => Ast::Atom(Atom::String(Token::unescape(origin))),
+            Token {
+                origin,
+                kind: TokenKind::Number(n),
+            } => Ast::Atom(Atom::Number),
+            Token {
+                origin,
+                kind: TokenKind::True,
+            } => Ast::Atom(Atom::Bool(true)),
+            Token {
+                origin,
+                kind: TokenKind::False,
+            } => Ast::Atom(Atom::Bool(false)),
+            Token {
+                kind: TokenKind::LeftParen | TokenKind::LeftBrace,
+                ..
+            } => {
+                let terminattor = match lhs.kind {
+                    TokenKind::LeftParen => TokenKind::RightParen,
+                    TokenKind::LeftBrace => TokenKind::RightBrace,
+                    _ => unreachable!("OB"),
+                };
+            }
+        };
+    }
+}
+
+fn expr<'de>(input: &str) -> Ast<'de> {
+    let mut lexer = Lexer::new(input);
+    expr_bp(&mut lexer, 0)
+}
+
+fn expr_bp<'de>(lexer: &mut Lexer, min_bp: u8) -> Ast<'de> {
+    let mut lhs = match lexer.next() {
+        Ast::Atom(it) => Ast::Atom(it),
+        Ast::Cons('(') => {
+            let lhs = expr_bp(lexer, 0);
+            assert_eq!(lexer.next(), Token::Op(')'));
+            lhs
+        }
+        Ast::Cons(op) => {
+            let ((), r_bp) = prefix_binding_power(op);
+            let rhs = expr_bp(lexer, r_bp);
+            Ast::Cons(op, vec![rhs])
+        }
+        t => panic!("bad token: {:?}", t),
+    };
+
+    loop {
+        let op = match lexer.peek() {
+            Token::Eof => break,
+            Token::Op(op) => op,
+            t => panic!("bad token: {:?}", t),
+        };
+
+        if let Some((l_bp, ())) = postfix_binding_power(op) {
+            if l_bp < min_bp {
+                break;
+            }
+            lexer.next();
+
+            lhs = if op == '[' {
+                let rhs = expr_bp(lexer, 0);
+                assert_eq!(lexer.next(), Token::Op(']'));
+                Ast::Cons(op, vec![lhs, rhs])
+            } else {
+                Ast::Cons(op, vec![lhs])
+            };
+            continue;
+        }
+
+        if let Some((l_bp, r_bp)) = infix_binding_power(op) {
+            if l_bp < min_bp {
+                break;
+            }
+            lexer.next();
+
+            lhs = if op == '?' {
+                let mhs = expr_bp(lexer, 0);
+                assert_eq!(lexer.next(), Token::Op(':'));
+                let rhs = expr_bp(lexer, r_bp);
+                Ast::Cons(op, vec![lhs, mhs, rhs])
+            } else {
+                let rhs = expr_bp(lexer, r_bp);
+                Ast::Cons(op, vec![lhs, rhs])
+            };
+            continue;
+        }
+
+        break;
+    }
+
+    lhs
+}
+
+fn infix_binding_power(op: char) -> Option<(u8, u8)> {
+    let res = match op {
+        '=' => (2, 1),
+        '?' => (4, 3),
+        '+' | '-' => (5, 6),
+        '*' | '/' => (7, 8),
+        '.' => (14, 13),
+        _ => return None,
+    };
+    Some(res)
+}
+
+fn prefix_binding_power(op: char) -> ((), u8) {
+    match op {
+        '+' | '-' => ((), 9),
+        _ => panic!("bad op: {:?}", op),
+    }
+}
+
+fn postfix_binding_power(op: char) -> Option<(u8, ())> {
+    let res = match op {
+        '!' => (11, ()),
+        '[' => (11, ()),
+        _ => return None,
+    };
+    Some(res)
+}

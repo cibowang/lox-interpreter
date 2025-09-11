@@ -29,7 +29,7 @@ fn main() -> miette::Result<()> {
                 let token = match token {
                     Ok(t) => t,
                     Err(e) => {
-                        if let Some(unrecognized) = e.downcast_ref::<SingleTokenError>() {
+                        if let Some(unrecognized) = e.downcast_ref::<lex::SingleTokenError>() {
                             eprintln!("{e:?}");
                             eprintln!(
                                 "[line {} ] Error: Unexpected char: {}",
@@ -37,6 +37,15 @@ fn main() -> miette::Result<()> {
                                 unrecognized.token
                             );
                             std::process::exit(65);
+                        } else if let Some(unterminated) =
+                            e.downcast_ref::<lex::StringTerminationError>()
+                        {
+                            eprintln!("{e:?}");
+                            eprintln!(
+                                "[line {} ] Error: Unterminated string, string.line()",
+                                unterminated.line(),
+                            );
+                            std::process::exit(66);
                         }
                         return Err(e);
                     }
