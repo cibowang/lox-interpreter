@@ -183,7 +183,7 @@ impl<'de> Iterator for Lexer<'de> {
             let c_at = self.byte;
             let mut chars = self.remainder.chars();
             let c = chars.next()?;
-            let literal = &self.remainder[..c.len_utf8()];
+            let literal = &self.remainder[..c.len_utf8()]; // literal is up until c
             let c_onwards = self.remainder;
             self.remainder = chars.as_str();
             self.byte += c.len_utf8();
@@ -229,11 +229,11 @@ impl<'de> Iterator for Lexer<'de> {
                 '>' => Started::IfEqualElse(TokenKind::GreaterEqual, TokenKind::Greater),
                 '!' => Started::IfEqualElse(TokenKind::BangEqual, TokenKind::Bang),
                 '=' => Started::IfEqualElse(TokenKind::EqualEqual, TokenKind::Equal),
-                '"' => Started::String,
-                '/' => Started::Slash,
-                '0'..='9' => Started::Number,
-                'a'..='z' | 'A'..='Z' | '_' => Started::Ident,
-                c if c.is_whitespace() => continue,
+                '"' => Started::String,                        // special
+                '/' => Started::Slash,                         // special
+                '0'..='9' => Started::Number,                  // special
+                'a'..='z' | 'A'..='Z' | '_' => Started::Ident, // special
+                c if c.is_whitespace() => continue,            // temination (\n, '')
                 c => {
                     return Some(Err(SingleTokenError {
                         src: self.whole.to_string(),
@@ -268,11 +268,13 @@ impl<'de> Iterator for Lexer<'de> {
                     //} else {
                     //    return Some(Ok(Token::Less));
                     //}
-                    self.remainder = self.remainder.trim_start();
-                    let trimmed = c_onwards.len() - self.remainder.len() - 1;
-                    self.byte += trimmed;
+                    self.remainder = self.remainder.trim_start(); // need to consider trim
+                    let trimmed = c_onwards.len() - self.remainder.len() - 1; // get trimmed pos
+                    self.byte += trimmed; // count trim in all bytes
                     if self.remainder.trim_start().starts_with('=') {
-                        let span = &c_onwards[..c.len_utf8() + trimmed + 1];
+                        let span = &c_onwards[..c.len_utf8() + trimmed + 1]; // span mv beyond
+                                                                             // cur_c, it's
+                                                                             // everything text
                         self.remainder = &self.remainder.trim_start()[1..];
                         self.byte += 1;
                         Some(Ok(Token {

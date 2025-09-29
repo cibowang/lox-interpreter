@@ -5,11 +5,9 @@ use crate::{
 use miette::{Context, Diagnostic, Error, LabeledSpan};
 use std::{borrow::Cow, fmt};
 
-#[derive(Diagnostic, Debug)]
-pub struct Eof;
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Op {
+    // op as Ast root displayed first
     Plus,
     Minus,
     Star,
@@ -29,25 +27,82 @@ pub enum Op {
     Print,
     Class,
     Fun,
-    Inheritance,
     Var,
     While,
     Return,
+    Group,
+    Call,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Display for Op {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Op::Plus => "+",
+                Op::Minus => "-",
+                Op::Star => "*",
+                Op::Bang => "!",
+                Op::Equal => "=",
+                Op::EqualEqual => "==",
+                Op::LessEqual => "<=",
+                Op::GreaterEqual => ">=",
+                Op::BangEqual => "!=",
+                Op::Less => "-",
+                Op::Greater => ">",
+                Op::Slash => "/",
+                Op::And => "and",
+                Op::Or => "or",
+                Op::If => "if",
+                Op::For => "for",
+                Op::Print => "print",
+                Op::Class => "class",
+                Op::Fun => "fun",
+                Op::Call => "call",
+                Op::Var => "var",
+                Op::While => "while",
+                Op::Return => "return",
+                Op::Group => "group",
+            }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Atom<'de> {
+    // single char & var
     String(Cow<'de, str>),
-    Number,
+    Number(f64),
     Bool(bool),
     Ident(&'de str),
-    Super,
-    This,
     Nil,
+    This,
+    Super,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-// Raw text
+impl std::fmt::Display for Atom<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Atom::String(s) => write!(f, "\"{s}\""),
+            Atom::Number(n) => {
+                if *n == n.trunc() {
+                    write!(f, "NUMBER {n}.0")
+                } else {
+                    write!(f, "NUMBER {n}")
+                }
+            }
+            Atom::Nil => write!(f, "nil"),
+            Atom::This => write!(f, "this"),
+            Atom::Super => write!(f, "super"),
+            Atom::Bool(b) => write!(f, "{b:?}"),
+            Atom::Ident(i) => write!(f, "{i}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+// Raw text in expr(), w.o. operator
 pub enum Ast<'de> {
     Atom(Atom<'de>),
     Cons(Op, Vec<Ast<'de>>),
@@ -60,7 +115,7 @@ impl std::fmt::Display for Ast<'_> {
             Ast::Cons(root, branch) => {
                 write!(f, "({}", root)?;
                 for s in branch {
-                    write!(f, " {}", s)?
+                    write!(f, "{}", s)?
                 }
                 write!(f, ")")
             }
@@ -69,6 +124,7 @@ impl std::fmt::Display for Ast<'_> {
 }
 
 pub struct Parser<'de> {
+    // parser to wrap lexer
     whole: &'de str,
     lexer: Lexer<'de>,
 }
@@ -80,11 +136,11 @@ impl<'de> Parser<'de> {
             lexer: Lexer::new(input),
         }
     }
-    // Parser to consume token
+    // Parser to consume token so need mut self
     pub fn parse(mut self) -> Result<Ast<'de>, Error> {
-        self.parse_within(None, 0)
+        self.parse_expr_within(None, 0)
     }
-    pub fn parse_within(
+    pub fn parse_expr_within(
         &mut self,
         target_op: Option<(Op, usize)>,
         min_bp: u8,
@@ -98,7 +154,7 @@ impl<'de> Parser<'de> {
                 } else {
                     "Looking for a statement".to_string();
                 };
-                return Err(e).wrap_err_with(msg)?;
+                return Err(e).wrap_err_with(|| format!("In {msg:?} expression"))?;
             }
         };
         let mut lhs = match lhs {
