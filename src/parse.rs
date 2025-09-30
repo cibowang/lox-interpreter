@@ -115,9 +115,9 @@ impl std::fmt::Display for Ast<'_> {
             Ast::Cons(root, branch) => {
                 write!(f, "({}", root)?;
                 for s in branch {
-                    write!(f, "{}", s)?
+                    write!(f, "{}", s)? // pasing might fail
                 }
-                write!(f, ")")
+                write!(f, ")") // no parsing
             }
         }
     }
@@ -136,27 +136,32 @@ impl<'de> Parser<'de> {
             lexer: Lexer::new(input),
         }
     }
-    // Parser to consume token so need mut self
+
     pub fn parse(mut self) -> Result<Ast<'de>, Error> {
-        self.parse_expr_within(None, 0)
+        self.parse_stmt_within(0)
     }
-    pub fn parse_expr_within(
-        &mut self,
-        target_op: Option<(Op, usize)>,
-        min_bp: u8,
-    ) -> Result<Ast<'de>, Error> {
+
+    pub fn parse_expr_within(&mut self, min_bp: u8) -> Result<Ast<'de>, Error> {}
+
+    // include all stmt elements for parsing {}
+    pub fn parse_block(mut self) -> Result<Ast<'de>, Error> {
+        self.lexer.expect(TokenKind::LeftBrace, "missing {")?;
+        let block = self.parse_stmt_within(0)?;
+        Ok(block)
+    }
+
+    pub fn parse_expr(mut self) -> Result<Ast<'de>, Error> {
+        self.parse_expr_within(0)
+    }
+    // Parser to consume token so need mut self
+    pub fn parse_stmt_within(&mut self, min_bp: u8) -> Result<Ast<'de>, Error> {
+        // match on lexer.next to lhs
         let lhs = match self.lexer.next() {
             Some(Ok(token)) => token,
             None => return Ok(Ast::Atom(Atom::Nil)),
-            Some(Err(e)) => {
-                let msg = if let Some((op, arg_i)) = target_op {
-                    format!("Looking for #{arg_i} for {op:?}");
-                } else {
-                    "Looking for a statement".to_string();
-                };
-                return Err(e).wrap_err_with(|| format!("In {msg:?} expression"))?;
-            }
+            Some(Err(e)) => return Err(e).wrap_err("on lhs"),
         };
+        // match on valid token
         let mut lhs = match lhs {
             // Atom
             Token {
@@ -168,7 +173,7 @@ impl<'de> Parser<'de> {
                 origin,
                 kind: TokenKind::Number(n),
                 ..
-            } => return Ok(Ast::Atom(Atom::Number)),
+            } => return Ok(Ast::Atom(Atom::Number(n))),
             Token {
                 origin,
                 kind: TokenKind::Nil,
@@ -184,7 +189,7 @@ impl<'de> Parser<'de> {
                 kind: TokenKind::False,
                 ..
             } => return Ok(Ast::Atom(Atom::Bool(false))),
-            // Prefix
+            // TBD: Prefix
             Token {
                 kind: TokenKind::Minus | TokenKind::Bang | TokenKind::Return | TokenKind::Print,
                 ..
@@ -201,7 +206,7 @@ impl<'de> Parser<'de> {
                     .wrap_err("Cannot parse RHS")?;
                 Ast::Cons(op, vec![rhs])
             }
-            //Prefix (double)
+            //TBD: Prefix (double)
             Token {
                 kind: TokenKind::For | TokenKind::While,
                 ..
@@ -260,7 +265,7 @@ impl<'de> Parser<'de> {
                         return Err(e).wrap_err("Target operator error")?;
                     }
                     None => {
-                        return Err(Eof).wrap_err("Target operator error")?;
+                        return Err(e).wrap_err("Target operator error")?;
                     }
                 }
 
@@ -269,7 +274,7 @@ impl<'de> Parser<'de> {
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
                 Ast::Cons(op, vec![first_cons, second_cons])
             }
-            //Prefix (triple)
+            //TBD: Prefix (triple)
             Token {
                 kind: TokenKind::Fun,
                 ..
@@ -289,7 +294,7 @@ impl<'de> Parser<'de> {
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
                 Ast::Cons(op, vec![first_cons, second_cons, third_cons])
             }
-            //Prefix (quardruple)
+            //TBD: Prefix (quardruple)
             Token {
                 kind: TokenKind::For | TokenKind::If,
                 ..
@@ -322,8 +327,10 @@ impl<'de> Parser<'de> {
                     _ => unreachable!("OB"),
                 };
                 let lhs = self
-                    .parse_within(target_op, min_bp)
+                    .parse_expr_within(min_bp)
                     .wrap_err("bracket expression")?;
+
+                // find the terminator in expr
                 match self.lexer.next() {
                     Some(Ok(token)) if token.kind == terminator => {}
                     Some(Ok(token)) => {
@@ -331,7 +338,7 @@ impl<'de> Parser<'de> {
                             labels = vec![
                                 LabeledSpan::at(token.offset..token.offset + token.origin.len(), "this identifier literal")
                             ],
-                           help = "Expected {terminator:?}",
+                           help = "Expecting {terminator:?}",
                            "Unexpected terminator",
                         }.with_source_code(self.whole.to_string())).wrap_err("Target operator error")?;
                     }

@@ -3,6 +3,10 @@ use std::borrow::Cow;
 use thiserror::Error;
 
 #[derive(Diagnostic, Debug, Error)]
+#[error("unexpected EOF")]
+pub struct Eof;
+
+#[derive(Diagnostic, Debug, Error)]
 #[error("Unexpected token '{token}' in input")]
 pub struct SingleTokenError {
     #[source_code]
@@ -163,6 +167,34 @@ impl<'de> Lexer<'de> {
             peeked: None,
         }
     }
+
+    pub fn expect(
+        &mut self,
+        expected: TokenKind,
+        unexpected: &str,
+    ) -> Result<Token<'de>, miette::Error> {
+        self.expect_where(|next| next.kind == expected, unexpected)
+    }
+
+    pub fn expect_where(
+        &mut self,
+        mut chk: impl FnMut(&Token<'de>) -> bool,
+        unexpected: &str,
+    ) -> Result<Token<'de>, miette::Error> {
+        match self.next() {
+            Some(Ok(token)) if chk(&token) => Ok(token),
+            Some(Ok(token)) => Err(miette::miette! {
+                            labels = vec![
+                                LabeledSpan::at(token.offset..token.offset + token.origin.len(), "this identifier literal")
+                            ],
+                           help = format!("Expected {token:?}"),
+                           "{unexpected}",
+                        }.with_source_code(self.whole.to_string())),
+            Some(Err(e)) => Err(e),
+            None => Err(Eof.into()),
+        }
+    }
+
     pub fn peek(&mut self) -> Option<&Result<Token<'de>, miette::Error>> {
         if self.peeked.is_some() {
             return self.peeked.as_ref();
