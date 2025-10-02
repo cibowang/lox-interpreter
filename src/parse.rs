@@ -4,6 +4,11 @@ use crate::{
 };
 use miette::{Context, Diagnostic, Error, LabeledSpan};
 use std::{borrow::Cow, fmt};
+use thiserror::Error;
+
+#[derive(Diagnostic, Debug, Error)]
+#[error("unexpected EOF")]
+pub struct Eof;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Op {
@@ -32,6 +37,7 @@ pub enum Op {
     Return,
     Group,
     Call,
+    Field,
 }
 
 impl std::fmt::Display for Op {
@@ -64,6 +70,7 @@ impl std::fmt::Display for Op {
                 Op::While => "while",
                 Op::Return => "return",
                 Op::Group => "group",
+                Op::Field => "field",
             }
         )
     }
@@ -81,6 +88,7 @@ pub enum Atom<'de> {
     Super,
 }
 
+// Format Atom into string
 impl std::fmt::Display for Atom<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -106,8 +114,23 @@ impl std::fmt::Display for Atom<'_> {
 pub enum Ast<'de> {
     Atom(Atom<'de>),
     Cons(Op, Vec<Ast<'de>>),
+    Fun {
+        name: Atom<'de>,
+        parameters: Vec<Token<'de>>,
+        body: Box<Ast<'de>>,
+    },
+    Call {
+        arguments: Vec<Ast<'de>>,
+        callee: Box<Ast<'de>>,
+    },
+    If {
+        cond: Box<Token<'de>>,
+        yes: Box<Ast<'de>>,
+        no: Option<Box<Ast<'de>>>,
+    },
 }
 
+// Format Ast into string
 impl std::fmt::Display for Ast<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -115,9 +138,35 @@ impl std::fmt::Display for Ast<'_> {
             Ast::Cons(root, branch) => {
                 write!(f, "({}", root)?;
                 for s in branch {
-                    write!(f, "{}", s)? // pasing might fail
+                    write!(f, "{s}")? // pasing might fail
                 }
                 write!(f, ")") // no parsing
+            }
+            Ast::Call { arguments, callee } => {
+                write!(f, "({callee}")?;
+                for a in arguments {
+                    write!(f, "{a}")?;
+                }
+                write!(f, ")")
+            }
+            Ast::If { cond, yes, no } => {
+                write!(f, "(if {cond} {yes}")?;
+                if let Some(no) = no {
+                    write!(f, "{no}")?
+                }
+                write!(f, ")")
+            }
+
+            Ast::Fun {
+                name,
+                parameters,
+                body,
+            } => {
+                write!(f, "def {name}")?;
+                for p in parameters {
+                    write!(f, "{p}")?;
+                }
+                write!(f, "{body}")
             }
         }
     }
@@ -143,7 +192,7 @@ impl<'de> Parser<'de> {
 
     pub fn parse_expr_within(&mut self, min_bp: u8) -> Result<Ast<'de>, Error> {}
 
-    // include all stmt elements for parsing {}
+    // Include all stmt elements for parsing {}
     pub fn parse_block(mut self) -> Result<Ast<'de>, Error> {
         self.lexer.expect(TokenKind::LeftBrace, "missing {")?;
         let block = self.parse_stmt_within(0)?;
@@ -161,30 +210,35 @@ impl<'de> Parser<'de> {
             None => return Ok(Ast::Atom(Atom::Nil)),
             Some(Err(e)) => return Err(e).wrap_err("on lhs"),
         };
-        // match on valid token
+        // match on valid token & return Ast-formatted ver
         let mut lhs = match lhs {
             // Atom
             Token {
+                // String
                 origin,
                 kind: TokenKind::String,
                 ..
             } => return Ok(Ast::Atom(Atom::String(Token::unescape(origin)))),
             Token {
+                // Number
                 origin,
                 kind: TokenKind::Number(n),
                 ..
             } => return Ok(Ast::Atom(Atom::Number(n))),
             Token {
+                // Nil
                 origin,
                 kind: TokenKind::Nil,
                 ..
             } => return Ok(Ast::Atom(Atom::Nil)),
             Token {
+                // True
                 origin,
                 kind: TokenKind::True,
                 ..
             } => return Ok(Ast::Atom(Atom::Bool(true))),
             Token {
+                // False
                 origin,
                 kind: TokenKind::False,
                 ..
@@ -360,9 +414,7 @@ impl<'de> Parser<'de> {
                     TokenKind::LeftBrace => TokenKind::RightBrace,
                     _ => unreachable!("OB"),
                 };
-                let lhs = self
-                    .parse_within(target_op, min_bp)
-                    .wrap_err("bracket expression")?;
+                let lhs = self.parse_within(min_bp).wrap_err("bracket expression")?;
                 match self.lexer.next() {
                     Some(Ok(token)) if token.kind == terminator => {}
                     Some(Ok(token)) => {
@@ -392,9 +444,7 @@ impl<'de> Parser<'de> {
                     TokenKind::LeftBrace => TokenKind::RightBrace,
                     _ => unreachable!("OB"),
                 };
-                let lhs = self
-                    .parse_within(target_op, min_bp)
-                    .wrap_err("bracket expression")?;
+                let lhs = self.parse_within(min_bp).wrap_err("bracket expression")?;
                 match self.lexer.next() {
                     Some(Ok(token)) if token.kind == terminator => {}
                     Some(Ok(token)) => {
@@ -486,52 +536,30 @@ impl<'de> Parser<'de> {
     }
 }
 
-fn expr<'de>(input: &str) -> Ast<'de> {
-    let mut lexer = Lexer::new(input);
-    expr_bp(&mut lexer, 0)
-}
-
-fn expr_bp<'de>(lexer: &mut Lexer, min_bp: u8) -> Ast<'de> {
-    let mut lhs = match lexer.next() {
-        Ast::Atom(it) => Ast::Atom(it),
-        Ast::Cons('(') => {
-            let lhs = expr_bp(lexer, 0);
-            assert_eq!(lexer.next(), Token::Op(')'));
-            lhs
-        }
-        Ast::Cons(op) => {
-            let ((), r_bp) = prefix_binding_power(op);
-            let rhs = expr_bp(lexer, r_bp);
-            Ast::Cons(op, vec![rhs])
-        }
-        t => panic!("bad token: {:?}", t),
-    };
-    lhs
+// Pos of operator in proportion to operands
+fn prefix_binding_power(op: Op) -> ((), u8) {
+    match op {
+        Op::Return | Op::Print => ((), 1),
+        Op::Bang | Op::Minus => ((), 11),
+        _ => panic!("Bad op: {:?}", op),
+    }
 }
 
 fn infix_binding_power(op: Op) -> Option<(u8, u8)> {
     let res = match op {
-        '=' => (2, 1),
-        '?' => (4, 3),
-        '+' | '-' => (5, 6),
-        '*' | '/' => (7, 8),
-        '.' => (14, 13),
+        Op::Equal => (2, 1),
+        Op::EqualEqual | Op::GreaterEqual | Op::LessEqual | Op::Greater | Op::Less => (5, 6),
+        Op::Plus | Op::Minus => (7, 8),
+        Op::Star | Op::Slash => (9, 10),
+        Op::Field => (16, 15),
         _ => return None,
     };
     Some(res)
 }
 
-fn prefix_binding_power(op: Op) -> ((), u8) {
-    match op {
-        Op::Bang | Op::Minus | Op::Return | Op::Print => ((), 9),
-        _ => panic!("bad op: {:?}", op),
-    }
-}
-
 fn postfix_binding_power(op: Op) -> Option<(u8, ())> {
     let res = match op {
-        '!' => (11, ()),
-        '[' => (11, ()),
+        Op::Call => (13, ()),
         _ => return None,
     };
     Some(res)
