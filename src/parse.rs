@@ -12,7 +12,7 @@ pub struct Eof;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Op {
-    // op as Ast root displayed first
+    // Op as Ast root displayed first
     Plus,
     Minus,
     Star,
@@ -78,7 +78,7 @@ impl std::fmt::Display for Op {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Atom<'de> {
-    // single char & var
+    // Single char & var
     String(Cow<'de, str>),
     Number(f64),
     Bool(bool),
@@ -116,17 +116,17 @@ pub enum Ast<'de> {
     Cons(Op, Vec<Ast<'de>>),
     Fun {
         name: Atom<'de>,
-        parameters: Vec<Token<'de>>,
-        body: Box<Ast<'de>>,
+        parameters: Vec<Token<'de>>, // Vec
+        body: Box<Ast<'de>>,         // Whole fn
     },
     Call {
-        arguments: Vec<Ast<'de>>,
-        callee: Box<Ast<'de>>,
+        arguments: Vec<Ast<'de>>, // Vec of Ast
+        callee: Box<Ast<'de>>,    // Whole fn
     },
     If {
-        cond: Box<Token<'de>>,
-        yes: Box<Ast<'de>>,
-        no: Option<Box<Ast<'de>>>,
+        cond: Box<Token<'de>>,     // Box as a intergral
+        yes: Box<Ast<'de>>,        // Whole fn
+        no: Option<Box<Ast<'de>>>, // Whole fn (optional)
     },
 }
 
@@ -136,11 +136,11 @@ impl std::fmt::Display for Ast<'_> {
         match self {
             Ast::Atom(i) => write!(f, "{}", i),
             Ast::Cons(root, branch) => {
-                write!(f, "({}", root)?;
+                write!(f, "({root}")?;
                 for s in branch {
-                    write!(f, "{s}")? // pasing might fail
+                    write!(f, "{s}")? // Parsing might fail
                 }
-                write!(f, ")") // no parsing
+                write!(f, ")") // No parsing
             }
             Ast::Call { arguments, callee } => {
                 write!(f, "({callee}")?;
@@ -173,7 +173,7 @@ impl std::fmt::Display for Ast<'_> {
 }
 
 pub struct Parser<'de> {
-    // parser to wrap lexer
+    // Parser to wrap lexer
     whole: &'de str,
     lexer: Lexer<'de>,
 }
@@ -186,12 +186,6 @@ impl<'de> Parser<'de> {
         }
     }
 
-    pub fn parse(mut self) -> Result<Ast<'de>, Error> {
-        self.parse_stmt_within(0)
-    }
-
-    pub fn parse_expr_within(&mut self, min_bp: u8) -> Result<Ast<'de>, Error> {}
-
     // Include all stmt elements for parsing {}
     pub fn parse_block(mut self) -> Result<Ast<'de>, Error> {
         self.lexer.expect(TokenKind::LeftBrace, "missing {")?;
@@ -199,9 +193,72 @@ impl<'de> Parser<'de> {
         Ok(block)
     }
 
+    pub fn parse_fun_call(&mut self) -> Result<Ast<'de>, Error> {
+        todo!()
+    }
     pub fn parse_expr(mut self) -> Result<Ast<'de>, Error> {
         self.parse_expr_within(0)
     }
+    pub fn parse_expr_within(&mut self, min_bp: u8) -> Result<Ast<'de>, Error> {
+        let lhs = match self.lexer.next() {
+            Some(Ok(token)) => token,
+            None => return Ok(Ast::Atom(Atom::Nil)),
+            Some(Err(e)) => return Err(e).wrap_err("on lhs"),
+        };
+        let mut lhs = match lhs {
+            Token {
+                origin, // Origin is for literal repre
+                kind: TokenKind::String,
+                ..
+            } => return Ok(Ast::Atom(Atom::String(Token::unescape(origin)))),
+            Token {
+                origin,
+                kind: TokenKind::Ident,
+                ..
+            } => return Ok(Ast::Atom(Atom::Ident(origin))),
+            Token {
+                kind: TokenKind::True,
+                ..
+            } => return Ok(Ast::Atom(Atom::Bool(true))),
+            Token {
+                kind: TokenKind::False,
+                ..
+            } => return Ok(Ast::Atom(Atom::Bool(false))),
+            Token {
+                kind: TokenKind::Nil,
+                ..
+            } => return Ok(Ast::Atom(Atom::Nil)),
+            Token {
+                kind: TokenKind::Number(n),
+                ..
+            } => return Ok(Ast::Atom(Atom::Number(n))),
+            Token {
+                kind: TokenKind::Super,
+                ..
+            } => return Ok(Ast::Atom(Atom::Super)),
+            Token {
+                kind: TokenKind::This,
+                ..
+            } => return Ok(Ast::Atom(Atom::This)),
+            Token {
+                kind: TokenKind::LeftParen,
+                ..
+            } => {
+                let lhs = self
+                    .parse_expr_within(0)
+                    .wrap_err("Within a bracket expr")?;
+                self.lexer
+                    .expect(TokenKind::RightParen, "Unexpected end")
+                    .wrap_err("to the bracket expr")?;
+                Ast::Cons(Op::Group, vec![lhs])
+            }
+        };
+    }
+
+    pub fn parse(mut self) -> Result<Ast<'de>, Error> {
+        self.parse_stmt_within(0)
+    }
+
     // Parser to consume token so need mut self
     pub fn parse_stmt_within(&mut self, min_bp: u8) -> Result<Ast<'de>, Error> {
         // match on lexer.next to lhs
@@ -210,54 +267,45 @@ impl<'de> Parser<'de> {
             None => return Ok(Ast::Atom(Atom::Nil)),
             Some(Err(e)) => return Err(e).wrap_err("on lhs"),
         };
-        // match on valid token & return Ast-formatted ver
+        // Match on valid token & return Ast-formatted ver
         let mut lhs = match lhs {
             // Atom
             Token {
-                // String
+                // identifier
                 origin,
-                kind: TokenKind::String,
+                kind: TokenKind::Ident,
                 ..
-            } => return Ok(Ast::Atom(Atom::String(Token::unescape(origin)))),
+            } => return Ok(Ast::Atom(Atom::Ident(origin))),
             Token {
-                // Number
-                origin,
-                kind: TokenKind::Number(n),
+                // Super
+                kind: TokenKind::Super,
                 ..
-            } => return Ok(Ast::Atom(Atom::Number(n))),
+            } => return Ok(Ast::Atom(Atom::Super)),
             Token {
-                // Nil
-                origin,
-                kind: TokenKind::Nil,
+                // This
+                kind: TokenKind::This,
                 ..
-            } => return Ok(Ast::Atom(Atom::Nil)),
+            } => return Ok(Ast::Atom(Atom::This)),
             Token {
-                // True
-                origin,
-                kind: TokenKind::True,
+                // Paren
+                kind: TokenKind::LeftParen,
                 ..
-            } => return Ok(Ast::Atom(Atom::Bool(true))),
-            Token {
-                // False
-                origin,
-                kind: TokenKind::False,
-                ..
-            } => return Ok(Ast::Atom(Atom::Bool(false))),
+            } => {
+                todo!()
+            }
             // TBD: Prefix
             Token {
                 kind: TokenKind::Minus | TokenKind::Bang | TokenKind::Return | TokenKind::Print,
                 ..
             } => {
                 let op = match lhs.kind {
-                    TokenKind::Bang => Op::Bang,
                     TokenKind::Minus => Op::Minus,
+                    TokenKind::Bang => Op::Bang,
                     TokenKind::Return => Op::Return,
                     TokenKind::Print => Op::Print,
                 };
                 let ((), r_bp) = prefix_binding_power(op);
-                let rhs = self
-                    .parse_within(Some((op, 0)), r_bp)
-                    .wrap_err("Cannot parse RHS")?;
+                let rhs = self.parse_expr_within(r_bp).wrap_err("Cannot parse RHS")?;
                 Ast::Cons(op, vec![rhs])
             }
             //TBD: Prefix (double)
@@ -270,18 +318,10 @@ impl<'de> Parser<'de> {
                     TokenKind::While => Op::While,
                     _ => unreachable!("OB"),
                 };
-                let init = self
-                    .parse_within(Some((op, 0)), 0)
-                    .wrap_err("in for loop")?;
-                let cond = self
-                    .parse_within(Some((op, 0)), 0)
-                    .wrap_err("in for loop")?;
-                let incr = self
-                    .parse_within(Some((op, 0)), 0)
-                    .wrap_err("in for loop")?;
-                let block = self
-                    .parse_within(Some((op, 0)), 0)
-                    .wrap_err("in for loop")?;
+                let init = self.parse_expr_within(0).wrap_err("in for loop")?;
+                let cond = self.parse_expr_within(0).wrap_err("in for loop")?;
+                let incr = self.parse_expr_within(0).wrap_err("in for loop")?;
+                let block = self.parse_expr_within(0).wrap_err("in for loop")?;
                 Ast::Cons(Op::For | Op::While, vec![cond, block])
             }
 
@@ -295,7 +335,7 @@ impl<'de> Parser<'de> {
                     _ => unreachable!("OB"),
                 };
                 let first_cons = self
-                    .parse_within(Some((op, 0)), min_bp)
+                    .parse_expr_within(min_bp)
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
 
                 if lhs.kind == TokenKind::Var {
@@ -319,12 +359,12 @@ impl<'de> Parser<'de> {
                         return Err(e).wrap_err("Target operator error")?;
                     }
                     None => {
-                        return Err(e).wrap_err("Target operator error")?;
+                        return Err(Eof).wrap_err("Target operator error")?;
                     }
                 }
 
                 let second_cons = self
-                    .parse_within(Some((op, 1)), min_bp)
+                    .parse_expr_within(min_bp)
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
                 Ast::Cons(op, vec![first_cons, second_cons])
             }
@@ -338,13 +378,13 @@ impl<'de> Parser<'de> {
                     _ => unreachable!("OB"),
                 };
                 let first_cons = self
-                    .parse_within(Some((op, 0)), min_bp)
+                    .parse_expr_within(in_bp)
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
                 let second_cons = self
-                    .parse_within(Some((op, 1)), min_bp)
+                    .parse_expr_within(min_bp)
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
                 let third_cons = self
-                    .parse_within(Some((op, 2)), min_bp)
+                    .parse_expr_within(in_bp)
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
                 Ast::Cons(op, vec![first_cons, second_cons, third_cons])
             }
@@ -359,13 +399,13 @@ impl<'de> Parser<'de> {
                     _ => unreachable!("OB"),
                 };
                 let first_cons = self
-                    .parse_within(Some((op, 0)), min_bp)
+                    .parse_expr_within(min_bp)
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
                 let second_cons = self
-                    .parse_within(Some((op, 1)), min_bp)
+                    .parse_expr_within(min_bp)
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
                 let third_cons = self
-                    .parse_within(Some((op, 2)), min_bp)
+                    .parse_expr_within(min_bp)
                     .wrap_err_with(|| format!("In {op:?} expression"))?;
                 Ast::Cons(op, vec![first_cons, second_cons, third_cons])
             }
@@ -414,7 +454,9 @@ impl<'de> Parser<'de> {
                     TokenKind::LeftBrace => TokenKind::RightBrace,
                     _ => unreachable!("OB"),
                 };
-                let lhs = self.parse_within(min_bp).wrap_err("bracket expression")?;
+                let lhs = self
+                    .parse_expr_within(min_bp)
+                    .wrap_err("bracket expression")?;
                 match self.lexer.next() {
                     Some(Ok(token)) if token.kind == terminator => {}
                     Some(Ok(token)) => {
@@ -444,7 +486,9 @@ impl<'de> Parser<'de> {
                     TokenKind::LeftBrace => TokenKind::RightBrace,
                     _ => unreachable!("OB"),
                 };
-                let lhs = self.parse_within(min_bp).wrap_err("bracket expression")?;
+                let lhs = self
+                    .parse_expr_within(min_bp)
+                    .wrap_err("bracket expression")?;
                 match self.lexer.next() {
                     Some(Ok(token)) if token.kind == terminator => {}
                     Some(Ok(token)) => {
@@ -506,7 +550,6 @@ impl<'de> Parser<'de> {
                 lexer.next();
 
                 lhs = if op == '[' {
-                    let rhs = expr_bp(lexer, 0);
                     assert_eq!(lexer.next(), Token::Op(']'));
                     Ast::Cons(op, vec![lhs, rhs])
                 } else {
@@ -522,12 +565,9 @@ impl<'de> Parser<'de> {
                 lexer.next();
 
                 lhs = if op == '?' {
-                    let mhs = expr_bp(lexer, 0);
                     assert_eq!(lexer.next(), Token::Op(':'));
-                    let rhs = expr_bp(lexer, r_bp);
                     Ast::Cons(op, vec![lhs, mhs, rhs])
                 } else {
-                    let rhs = expr_bp(lexer, r_bp);
                     Ast::Cons(op, vec![lhs, rhs])
                 };
                 continue;
