@@ -1,0 +1,385 @@
+use std::{borrow::Cow, fmt::Display};
+
+use crate::{
+    lex::{
+        Token,
+        TokenKind::{self, LeftBrace, RightParen},
+    },
+    parse::Atom::{Ident, Num, RightBrace},
+    Lexer,
+};
+
+// arithmetic op: (+, -, *, /, %, **, ++, --)
+// logical op: (&&, ||, NOT)
+// relational op: (>, <, >=, <=, ==, !=)
+// bitwise op: (&, |, ^, <<, >>, ~)
+// others: (., callee)
+#[derive(Debug)]
+enum Op {
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Modulo,
+    Exponential,
+    Increment,
+    Decrement,
+    And,
+    Or,
+    Not,
+    Greater,
+    Less,
+    GreaterEqual,
+    LessEqual,
+    EqualEqual,
+    BangEqual,
+    Bang,
+    Dot,
+    Return,
+    Print,
+    Call,
+    LeftShift,
+    RightShift,
+    Group,
+}
+
+// every token is &str in Ast (non-cap)
+// support binary op
+impl Display for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Op::Plus => "+",
+                Op::Minus => "-",
+                Op::Star => "*",
+                Op::Slash => "/",
+                Op::Modulo => "%",
+                Op::Exponential => "**",
+                Op::Increment => "++",
+                Op::Decrement => "--",
+                Op::And => "and",
+                Op::Or => "or",
+                Op::Not => "not",
+                Op::Greater => ">",
+                Op::Less => "<",
+                Op::GreaterEqual => ">=",
+                Op::LessEqual => "<=",
+                Op::EqualEqual => "==",
+                Op::BangEqual => "!=",
+                Op::Bang => "!",
+                Op::Dot => ".",
+                Op::Return => "return",
+                Op::Print => "print",
+                Op::Call => "call",
+                Op::LeftShift => "<<",
+                Op::RightShift => ">>",
+            }
+        )
+    }
+}
+
+// collection of tokens (including keyword)
+#[derive(Debug, Clone, PartialEq)]
+enum Atom<'de> {
+    Ident(Vec<Token<'de>>),
+    String(Cow<'de, &'de str>),
+    True,
+    False,
+    Num(f64),
+    Var,
+    Callee,
+    While,
+    For,
+    Field,
+    If,
+    Else,
+    Nil,
+    LeftBrace,
+    RightBrace,
+    LeftParen,
+    RightParen,
+}
+
+// for num, need to consider x.0
+impl<'de> Display for Atom<'de> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Atom::Ident(i) => write!(f, "{}", i),
+            Atom::String(s) => write!(f, "\"{s}\""),
+            Atom::True => write!(f, "true"),
+            Atom::False => write!(f, "false"),
+            Atom::Num(n) => {
+                if *n == *n {
+                    write!(f, "{n}.0")
+                } else {
+                    write!(f, "{n}")
+                }
+            }
+            Atom::Var => write!(f, "var"),
+            Atom::Callee => write!(f, "callee"),
+            Atom::While => write!(f, "while"),
+            Atom::For => write!(f, "for"),
+            Atom::Field => write!(f, "field"),
+            Atom::If => write!(f, "if"),
+            Atom::Else => write!(f, "else"),
+            Atom::Nil => write!(f, "nil"),
+            Atom::LeftBrace => write!(f, "{{"),
+            Atom::RightBrace => write!(f, "}}"),
+            Atom::LeftParen => write!(f, "(("),
+            Atom::RightParen => write!(f, "))"),
+        }
+    }
+}
+
+// cons is used for grouping expr in paran (special case)
+// call is special Ast pattern: callee(paran_list)
+#[derive(Debug)]
+enum Ast<'de> {
+    Atom(Atom<'de>),
+    Cons(Op, Option<Vec<Ast<'de>>>),
+    Fn {
+        name: Atom<'de>,
+        paran_list: Vec<Atom<'de>>,
+        definition_block: Box<Ast<'de>>,
+    },
+    Call {
+        arguments: Vec<Atom<'de>>,
+        callee: Box<Atom<'de>>,
+    },
+    If {
+        predicate: Vec<Atom<'de>>,
+        exiting_block: Box<Ast<'de>>,
+        exit_block: Option<(Atom<'de>, Vec<Atom<'de>>)>,
+    },
+}
+
+// for Ast need to add a terminater to cease parsing (fn NO NEED)
+// parsing of root/op might fail
+impl<'de> Display for Ast<'de> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Ast::Atom(i) => write!(f, "{i}"),
+            Ast::Cons(root, branch) => {
+                write!(f, "{root}")?;
+                for s in branch {
+                    write!(f, "{}", s)?
+                }
+                write!(f, ")")
+            }
+            Ast::Fn {
+                name,
+                paran_list,
+                definition_block,
+            } => {
+                write!(f, "fn {name}")?;
+                for paran in paran_list {
+                    write!(f, "{paran}")?
+                }
+                write!(f, "{definition_block}")
+            }
+            Ast::Call { arguments, callee } => {
+                for arg in arguments {
+                    write!(f, "{arg}")?
+                }
+                write!(f, "{callee}")?;
+                write!(f, ")")
+            }
+            Ast::If {
+                predicate,
+                exiting_block,
+                exit_block,
+            } => {
+                write!(f, "if {} {}", predicate, exiting_block);
+                if let Some(exit_block) = exit_block {
+                    write!(f, "{}", exit_block)?
+                }
+                write!(f, "if {} {} {}", predicate, exiting_block, exit_block)
+            }
+        }
+    }
+}
+
+pub struct Parser<'de> {
+    span: &'de str,
+    lexer: Lexer<'de>,
+}
+
+// parse all return Result<Ast>
+impl<'de> Parser<'de> {
+    fn new(input: &'de str) -> Self {
+        Parser {
+            span: input,
+            lexer: Lexer::new(input),
+        }
+    }
+    fn parse() {}
+    // work on lhs(canbe anything)
+    // keyword/num NO literal included
+    // paren is identified by '(' in parse_fn_args()
+    fn parse_expr(&mut self, min_bp: u8) -> Result<Ast<'_>, ()> {
+        let lhs = match self.lexer.next() {
+            Some(Ok(token)) => token,
+            None => return Ok(Ast::Atom(Atom::Nil)),
+            Some(Err(e)) => Err(e).unwrap_err("on lhs"),
+        };
+        match lhs {
+            Token {
+                origin,
+                kind: TokenKind::Ident,
+            } => return Ok(Ast::Atom(Atom::Ident(origin))),
+            Token {
+                origin,
+                kind: TokenKind::String,
+            } => return Ok(Ast::Atom(Atom::String(Token::unescape(origin)))),
+            Token {
+                kind: TokenKind::Bool,
+                ..
+            } => return Ok(Ast::Atom(Atom::True)),
+            Token {
+                kind: TokenKind::Bool,
+                ..
+            } => return Ok(Ast::Atom(Atom::False)),
+            Token {
+                kind: TokenKind::Number(n),
+                ..
+            } => return Ok(Ast::Atom(Num(n))),
+            Token {
+                kind: TokenKind::Var,
+                ..
+            } => return Ok(Ast::Atom(Atom::Var)),
+            Token {
+                origin,
+                kind: TokenKind::Callee,
+            } => return Ok(Ast::Atom(Atom::Callee)),
+            Token {
+                kind: TokenKind::While,
+                ..
+            } => return Ok(Ast::Atom(Atom::While)),
+            Token {
+                kind: TokenKind::For,
+                ..
+            } => return Ok(Ast::Atom(Atom::For)),
+            Token {
+                origin,
+                kind: TokenKind::Field,
+            } => return Ok(Ast::Atom(Atom::Field)),
+            Token {
+                kind: TokenKind::If,
+                ..
+            } => return Ok(Ast::Atom(Atom::If)),
+            Token {
+                kind: TokenKind::Else,
+                ..
+            } => return Ok(Ast::Atom(Atom::Else)),
+            Token {
+                kind: TokenKind::Nil,
+                ..
+            } => return Ok(Ast::Atom(Atom::Nil)),
+            Token {
+                kind: TokenKind::LeftParen,
+                ..
+            } => {
+                let lhs = self.parse_expr(1)?;
+                self.lexer
+                    .expect(TokenKind::RightParen, "in this expression")?;
+                return Ok(Ast::Cons(Op::Group, Some(vec![lhs])));
+            }
+            _ => (),
+        }
+    }
+    // leading with all token, including keyword
+    // op need arbitration
+    fn parse_stmt(&mut self, min_bp: u8) -> Result<Ast<'_>, ()> {
+        let lhs = match self.lexer.next() {
+            Some(Ok(token)) => token,
+            None => return Ok(Ast::Atom(Atom::Nil)),
+            Some(Err(e)) => Err(e).unwrap_err("on lhs"),
+        };
+        match lhs {
+            Token {
+                kind: TokenKind::LeftParen,
+                ..
+            } => {
+                let lhs = self.parse_expr(1)?;
+                self.lexer
+                    .expect(TokenKind::RightParen, "in this expression")?;
+                return Ok(Ast::Cons(Op::Group, Some(vec![lhs])));
+            }
+            // unary
+            Token { 
+            kind: TokenKind::Minus | TokenKind::Bang,
+            .. } => {
+            let op = match self.lexer.next() ;
+            let bp = prefix_bp(min_bp);
+            }
+            _ => (),
+        }
+        unimplemented!()
+    }
+    // block is a combination of stmts
+    // block is identified by '{' in parse_stmt()
+    fn parse_block(&mut self) -> Result<Ast<'_>, ()> {
+        self.lexer.expect(TokenKind::LeftBrace, "missing {")?;
+        let block = self.parse_stmt(1)?;
+        Ok(block)
+    }
+    // args_list is identified by ')'
+    fn parse_fn_args(&mut self) -> Result<Ast<'_>, ()> {
+        let mut args_list = vec![];
+        if matches!(
+            self.lexer.peek(),
+            Some(Ok(Token {
+                kind: TokenKind::RightParen,
+                ..
+            }))
+        ) {
+        } else {
+            loop {
+                let argument = self.parse_expr(1).unwrap_err();
+                args_list.push(argument);
+                let token = self.lexer.expect_where(
+                    |token| matches!(token.kind, TokenKind::Comma | TokenKind::RightParen),
+                    "continue",
+                )?;
+                if token.kind == TokenKind::RightParen {
+                    break;
+                }
+            }
+        }
+        Ok(args_list)
+    }
+}
+
+// take Op and return bp
+// priority in expression should never be equal between (lhs, rhs)
+// always have to lookahead over entire span to identify if a drop to decide on priority (but NOT
+// drop below min_bp: 1)
+fn prefix_bp(op: Op) -> ((), u8) {
+    let op = match op {
+        Op::Return | Op::Print => ((), 1),
+        Op::Bang => ((), 10),
+        Op::Minus => ((), 9),
+        _ => panic!("Oops"),
+    };
+    return op;
+}
+fn infix_bp(op: Op) -> (u8, u8) {
+    let op = match op {
+        Op::Plus => (1, 2),
+        Op::Minus => (3, 4),
+        Op::Star => (5, 6),
+        Op::Slash => (7, 8),
+        Op::Dot => (11, 12),
+        _ => panic!("Oops"),
+    };
+    return op;
+}
+fn postfix_bp(op: Op) -> (u8, ()) {
+    let op = match op {
+        Op::Call => (13, ()),
+        _ => panic!("Oops"),
+    };
+    return op;
+}

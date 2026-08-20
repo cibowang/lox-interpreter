@@ -2,46 +2,55 @@ use crate::{
     lex::{Token, TokenKind},
     Lexer,
 };
-use miette::{Context, Diagnostic, Error, LabeledSpan};
-use std::{borrow::Cow, fmt};
-use thiserror::Error;
+use miette::{Error, LabeledSpan, WrapErr};
+use std::{borrow::Cow, fmt::Display};
 
-#[derive(Diagnostic, Debug, Error)]
-#[error("unexpected EOF")]
-pub struct Eof;
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+// arithmetic op: (+, -, *, /, %, **, ++, --)
+// logical op: (&&, ||, NOT)
+// relational op: (>, <, >=, <=, ==, !=)
+// bitwise op: (&, |, ^, <<, >>, ~)
+// others: (., callee)
+#[derive(Debug, Clone)]
 pub enum Op {
-    // Op as Ast root displayed first
     Plus,
     Minus,
     Star,
-    Bang,
-    Equal,
-    EqualEqual,
-    LessEqual,
-    GreaterEqual,
-    BangEqual,
-    Less,
-    Greater,
     Slash,
+    Modulo,
+    Exponential,
+    Increment,
+    Decrement,
     And,
     Or,
-    If,
-    For,
-    Print,
-    Class,
-    Fun,
-    Var,
-    While,
+    Not,
+    Greater,
+    Less,
+    GreaterEqual,
+    LessEqual,
+    EqualEqual,
+    BangEqual,
+    Bang,
+    Dot,
     Return,
-    Group,
+    Print,
     Call,
+    LeftShift,
+    RightShift,
+    Unit,
+    For,
+    While,
+    Class,
+    Var,
+    Fn,
+    If,
     Field,
+    Nil,
 }
 
-impl std::fmt::Display for Op {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+// every token is &str in Ast (non-cap)
+// support binary op
+impl Display for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
@@ -49,558 +58,559 @@ impl std::fmt::Display for Op {
                 Op::Plus => "+",
                 Op::Minus => "-",
                 Op::Star => "*",
-                Op::Bang => "!",
-                Op::Equal => "=",
-                Op::EqualEqual => "==",
-                Op::LessEqual => "<=",
-                Op::GreaterEqual => ">=",
-                Op::BangEqual => "!=",
-                Op::Less => "-",
-                Op::Greater => ">",
                 Op::Slash => "/",
+                Op::Modulo => "%",
+                Op::Exponential => "**",
+                Op::Increment => "++",
+                Op::Decrement => "--",
                 Op::And => "and",
                 Op::Or => "or",
-                Op::If => "if",
-                Op::For => "for",
-                Op::Print => "print",
-                Op::Class => "class",
-                Op::Fun => "fun",
-                Op::Call => "call",
-                Op::Var => "var",
-                Op::While => "while",
+                Op::Not => "not",
+                Op::Greater => ">",
+                Op::Less => "<",
+                Op::GreaterEqual => ">=",
+                Op::LessEqual => "<=",
+                Op::EqualEqual => "==",
+                Op::BangEqual => "!=",
+                Op::Bang => "!",
+                Op::Dot => ".",
                 Op::Return => "return",
-                Op::Group => "group",
-                Op::Field => "field",
+                Op::Print => "print",
+                Op::Call => "call",
+                Op::LeftShift => "<<",
+                Op::RightShift => ">>",
+                Op::For => "for",
+                Op::While => "while",
+                Op::Class => "class",
+                Op::Var => "var",
+                Op::Fn => "fn",
+                Op::If => "if",
+                Op::Field => ".",
+                Op::Nil => "",
+                Op::Unit => "group",
             }
         )
     }
 }
 
+// typical word, collection of tokens (including keyword)
+// num as f64
+// callee is special
 #[derive(Debug, Clone, PartialEq)]
 pub enum Atom<'de> {
-    // Single char & var
-    String(Cow<'de, str>),
-    Number(f64),
-    Bool(bool),
     Ident(&'de str),
+    String(Cow<'de, &'de str>),
+    True,
+    False,
+    Num(f64),
+    Var,
+    While,
+    For,
+    Field,
+    If,
+    Else,
     Nil,
-    This,
-    Super,
+    LeftBrace,
+    RightBrace,
+    LeftParen,
+    RightParen,
+    Bang,
+    Minus,
+    Bool(bool),
 }
 
-// Format Atom into string
-impl std::fmt::Display for Atom<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+// for num, need to consider x.0
+// no escape to consider for string in Display
+impl<'de> Display for Atom<'de> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Atom::Ident(i) => write!(f, "{i}"),
             Atom::String(s) => write!(f, "\"{s}\""),
-            Atom::Number(n) => {
+            Atom::True => write!(f, "true"),
+            Atom::False => write!(f, "false"),
+            Atom::Num(n) => {
+                // int ONLY
                 if *n == n.trunc() {
-                    write!(f, "NUMBER {n}.0")
+                    write!(f, "{n}.0")
                 } else {
-                    write!(f, "NUMBER {n}")
+                    write!(f, "{n}")
                 }
             }
+            Atom::Var => write!(f, "var"),
+            Atom::While => write!(f, "while"),
+            Atom::For => write!(f, "for"),
+            Atom::Field => write!(f, "field"),
+            Atom::If => write!(f, "if"),
+            Atom::Else => write!(f, "else"),
             Atom::Nil => write!(f, "nil"),
-            Atom::This => write!(f, "this"),
-            Atom::Super => write!(f, "super"),
-            Atom::Bool(b) => write!(f, "{b:?}"),
-            Atom::Ident(i) => write!(f, "{i}"),
+            Atom::LeftBrace => write!(f, "{{"),
+            Atom::RightBrace => write!(f, "}}"),
+            Atom::LeftParen => write!(f, "(("),
+            Atom::RightParen => write!(f, "))"),
+            Atom::Bang => write!(f, "!"),
+            Atom::Minus => write!(f, "-"),
+            Atom::Bool(b) => write!(f, "{b}"),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-// Raw text in expr(), w.o. operator
+// "comma" isnon-exsistent in Ast
+// "paren" will be eaten by parser & printed by Disaply
+// cons is op + operand(lhs/rhs),  used for grouping expr in paran (special case)
+// call is special Ast pattern: callee(paran_list)
+// No Option used in Ast
+#[derive(Debug, Clone)]
 pub enum Ast<'de> {
     Atom(Atom<'de>),
     Cons(Op, Vec<Ast<'de>>),
-    Fun {
+    Fn {
         name: Atom<'de>,
-        parameters: Vec<Token<'de>>, // Vec
-        body: Box<Ast<'de>>,         // Whole fn
+        // growable as per callee
+        // in Ast form
+        // MUST align with return type of parse_fn_args()
+        paran_list: Vec<Ast<'de>>,
+        definition_block: Box<Ast<'de>>,
     },
     Call {
-        arguments: Vec<Ast<'de>>, // Vec of Ast
-        callee: Box<Ast<'de>>,    // Whole fn
+        // fixed (use literal)
+        // align with fn (acceptable)
+        callee: Box<Ast<'de>>,
+        arguments: Vec<Ast<'de>>,
     },
     If {
-        cond: Box<Token<'de>>,     // Box as a intergral
-        yes: Box<Ast<'de>>,        // Whole fn
-        no: Option<Box<Ast<'de>>>, // Whole fn (optional)
+        // fixed
+        predicate: Box<Ast<'de>>,
+        exiting_block: Box<Ast<'de>>,
+        exit_block: Option<Box<Ast<'de>>>,
     },
 }
 
-// Format Ast into string
-impl std::fmt::Display for Ast<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+// parsing of root/op might fail
+impl<'de> Display for Ast<'de> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Ast::Atom(i) => write!(f, "{}", i),
+            Ast::Atom(i) => write!(f, "{i}"),
+            // TBD: Group
             Ast::Cons(root, branch) => {
-                write!(f, "({root}")?;
+                write!(f, "{root}")?;
                 for s in branch {
-                    write!(f, "{s}")? // Parsing might fail
+                    write!(f, "{:?}", s)?
                 }
-                write!(f, ")") // No parsing
+                write!(f, ")")
+            }
+            Ast::Fn {
+                name,
+                paran_list,
+                definition_block,
+            } => {
+                write!(f, "fn {name}")?;
+                for paran in paran_list {
+                    write!(f, "{paran}")?
+                }
+                write!(f, "{definition_block}")
             }
             Ast::Call { arguments, callee } => {
-                write!(f, "({callee}")?;
-                for a in arguments {
-                    write!(f, "{a}")?;
+                for arg in arguments {
+                    write!(f, "{arg}")?
                 }
+                write!(f, "{callee}")?;
                 write!(f, ")")
             }
-            Ast::If { cond, yes, no } => {
-                write!(f, "(if {cond} {yes}")?;
-                if let Some(no) = no {
-                    write!(f, "{no}")?
-                }
-                write!(f, ")")
-            }
-
-            Ast::Fun {
-                name,
-                parameters,
-                body,
+            Ast::If {
+                predicate,
+                exiting_block,
+                exit_block,
             } => {
-                write!(f, "def {name}")?;
-                for p in parameters {
-                    write!(f, "{p}")?;
+                let _ = write!(f, "if {predicate} {exiting_block}");
+                if let Some(exit_block) = exit_block {
+                    write!(f, "{:?}", exit_block)?
                 }
-                write!(f, "{body}")
+                write!(f, "if {predicate} {exiting_block} {:?}", exit_block)
             }
         }
     }
 }
 
 pub struct Parser<'de> {
-    // Parser to wrap lexer
-    whole: &'de str,
-    lexer: Lexer<'de>,
+    pub span: &'de str,
+    pub lexer: Lexer<'de>,
 }
 
+// parse all return Result<Ast>
+// NOT omit lifetime annotation for return type
+// callee should NOT use mut self to give away ownership to the caller (while caller can as builder)
 impl<'de> Parser<'de> {
     pub fn new(input: &'de str) -> Self {
         Parser {
-            whole: input,
+            span: input,
             lexer: Lexer::new(input),
         }
     }
-
-    // Include all stmt elements for parsing {}
-    pub fn parse_block(mut self) -> Result<Ast<'de>, Error> {
-        self.lexer.expect(TokenKind::LeftBrace, "missing {")?;
-        let block = self.parse_stmt_within(0)?;
-        Ok(block)
-    }
-
-    pub fn parse_fun_call(&mut self) -> Result<Ast<'de>, Error> {
-        todo!()
-    }
-    pub fn parse_expr(mut self) -> Result<Ast<'de>, Error> {
-        self.parse_expr_within(0)
-    }
-    pub fn parse_expr_within(&mut self, min_bp: u8) -> Result<Ast<'de>, Error> {
+    // derive lhs/rhs/args_list, which starts after keyword
+    // next() will eat the left_paren
+    pub fn parse_expr(&mut self, _min_bp: u8) -> Result<Ast<'de>, Error> {
         let lhs = match self.lexer.next() {
             Some(Ok(token)) => token,
             None => return Ok(Ast::Atom(Atom::Nil)),
-            Some(Err(e)) => return Err(e).wrap_err("on lhs"),
+            Some(Err(e)) => return Err(e),
         };
-        let mut lhs = match lhs {
-            Token {
-                origin, // Origin is for literal repre
-                kind: TokenKind::String,
-                ..
-            } => return Ok(Ast::Atom(Atom::String(Token::unescape(origin)))),
+        let lhs = match lhs {
             Token {
                 origin,
                 kind: TokenKind::Ident,
                 ..
-            } => return Ok(Ast::Atom(Atom::Ident(origin))),
+            } => Ast::Atom(Atom::Ident(origin)),
+            Token {
+                origin,
+                kind: TokenKind::String,
+                ..
+            } => Ast::Atom(Atom::String(Token::unescape(origin))),
             Token {
                 kind: TokenKind::True,
                 ..
-            } => return Ok(Ast::Atom(Atom::Bool(true))),
+            } => Ast::Atom(Atom::Bool(true)),
             Token {
                 kind: TokenKind::False,
                 ..
-            } => return Ok(Ast::Atom(Atom::Bool(false))),
-            Token {
-                kind: TokenKind::Nil,
-                ..
-            } => return Ok(Ast::Atom(Atom::Nil)),
+            } => Ast::Atom(Atom::Bool(false)),
             Token {
                 kind: TokenKind::Number(n),
                 ..
-            } => return Ok(Ast::Atom(Atom::Number(n))),
+            } => Ast::Atom(Atom::Num(n)),
             Token {
-                kind: TokenKind::Super,
+                kind: TokenKind::Var,
                 ..
-            } => return Ok(Ast::Atom(Atom::Super)),
+            } => Ast::Atom(Atom::Var),
+            // No need to map callee
+            //Token {
+            //    origin,
+            //    kind: TokenKind::Callee,
+            //} => return Ok(Ast::Atom(Atom::Callee)),
             Token {
-                kind: TokenKind::This,
+                kind: TokenKind::While,
                 ..
-            } => return Ok(Ast::Atom(Atom::This)),
+            } => Ast::Atom(Atom::While),
+            Token {
+                kind: TokenKind::For,
+                ..
+            } => Ast::Atom(Atom::For),
+            Token {
+                kind: TokenKind::Field,
+                ..
+            } => Ast::Atom(Atom::Field),
+            Token {
+                kind: TokenKind::If,
+                ..
+            } => Ast::Atom(Atom::If),
+            Token {
+                kind: TokenKind::Else,
+                ..
+            } => Ast::Atom(Atom::Else),
+            Token {
+                kind: TokenKind::Nil,
+                ..
+            } => Ast::Atom(Atom::Nil),
             Token {
                 kind: TokenKind::LeftParen,
                 ..
             } => {
-                let lhs = self
-                    .parse_expr_within(0)
-                    .wrap_err("Within a bracket expr")?;
-                self.lexer
-                    .expect(TokenKind::RightParen, "Unexpected end")
-                    .wrap_err("to the bracket expr")?;
-                Ast::Cons(Op::Group, vec![lhs])
+                let lhs = self.parse_expr(1)?;
+                let _ = self
+                    .lexer
+                    .expect(TokenKind::RightParen, "in this expression");
+                Ast::Cons(Op::Unit, vec![lhs])
             }
+            _ => unreachable!("abc"),
         };
+        Ok(lhs)
     }
-
-    pub fn parse(mut self) -> Result<Ast<'de>, Error> {
-        self.parse_stmt_within(0)
-    }
-
-    // Parser to consume token so need mut self
-    pub fn parse_stmt_within(&mut self, min_bp: u8) -> Result<Ast<'de>, Error> {
-        // match on lexer.next to lhs
+    // everything start being the `lhs`
+    // paren is associated with lhs
+    // op need arbitration, to be derived from lhs
+    // this is a callee (mut self as more useful than &)
+    pub fn parse_stmt(&mut self, min_bp: u8) -> Result<Ast<'de>, Error> {
         let lhs = match self.lexer.next() {
             Some(Ok(token)) => token,
             None => return Ok(Ast::Atom(Atom::Nil)),
-            Some(Err(e)) => return Err(e).wrap_err("on lhs"),
+            Some(Err(e)) => return Err(e),
         };
-        // Match on valid token & return Ast-formatted ver
         let mut lhs = match lhs {
-            // Atom
+            // special case 0: Unit
             Token {
-                // identifier
-                origin,
-                kind: TokenKind::Ident,
-                ..
-            } => return Ok(Ast::Atom(Atom::Ident(origin))),
-            Token {
-                // Super
-                kind: TokenKind::Super,
-                ..
-            } => return Ok(Ast::Atom(Atom::Super)),
-            Token {
-                // This
-                kind: TokenKind::This,
-                ..
-            } => return Ok(Ast::Atom(Atom::This)),
-            Token {
-                // Paren
                 kind: TokenKind::LeftParen,
                 ..
             } => {
-                todo!()
+                let lhs = self.parse_expr(1)?;
+                let _ = self
+                    .lexer
+                    .expect(TokenKind::RightParen, "in this expression");
+                Ast::Cons(Op::Unit, vec![lhs])
             }
-            // TBD: Prefix
+            // special case I: unary prefix (lhs is always 0 for bp)
+            // return rhs
             Token {
-                kind: TokenKind::Minus | TokenKind::Bang | TokenKind::Return | TokenKind::Print,
+                kind: TokenKind::Print | TokenKind::Return,
                 ..
             } => {
                 let op = match lhs.kind {
-                    TokenKind::Minus => Op::Minus,
-                    TokenKind::Bang => Op::Bang,
-                    TokenKind::Return => Op::Return,
                     TokenKind::Print => Op::Print,
+                    TokenKind::Return => Op::Return,
+                    _ => unreachable!(),
                 };
-                let ((), r_bp) = prefix_binding_power(op);
-                let rhs = self.parse_expr_within(r_bp).wrap_err("Cannot parse RHS")?;
-                Ast::Cons(op, vec![rhs])
+                // fn prefix_bp(op: Op) -> Option<((), u8)>
+                let ((), r_bp) = prefix_bp(op);
+                let rhs = self.parse_expr(r_bp)?;
+                Ast::Cons(Op::Print, vec![rhs])
             }
-            //TBD: Prefix (double)
+            // for (i=0; i < 5; i++) {}
             Token {
-                kind: TokenKind::For | TokenKind::While,
+                kind: TokenKind::For,
                 ..
             } => {
-                let op = match lhs.kind {
-                    TokenKind::For => Op::For,
-                    TokenKind::While => Op::While,
-                    _ => unreachable!("OB"),
-                };
-                let init = self.parse_expr_within(0).wrap_err("in for loop")?;
-                let cond = self.parse_expr_within(0).wrap_err("in for loop")?;
-                let incr = self.parse_expr_within(0).wrap_err("in for loop")?;
-                let block = self.parse_expr_within(0).wrap_err("in for loop")?;
-                Ast::Cons(Op::For | Op::While, vec![cond, block])
+                let init = self.parse_expr(1)?;
+                let _ = self.lexer.expect(TokenKind::Semicolon, "in this lhs");
+                let cond = self.parse_expr(1)?;
+                let _ = self.lexer.expect(TokenKind::Semicolon, "in this lhs");
+                let incre = self.parse_expr(1)?;
+                let _ = self.lexer.expect(TokenKind::RightParen, "in this lhs");
+                let block = self.parse_block()?;
+                Ast::Cons(Op::For, vec![init, cond, incre, block])
             }
-
+            // while (i < 5) {}
             Token {
-                kind: TokenKind::Var | TokenKind::Class,
+                kind: TokenKind::While,
                 ..
             } => {
-                let op = match lhs.kind {
-                    TokenKind::Var => Op::Var,
-                    TokenKind::Class => Op::Class,
-                    _ => unreachable!("OB"),
-                };
-                let first_cons = self
-                    .parse_expr_within(min_bp)
-                    .wrap_err_with(|| format!("In {op:?} expression"))?;
-
+                let cond = self.parse_expr(1)?;
+                let _ = self.lexer.expect(TokenKind::RightParen, "in this lhs");
+                let block = self.parse_block()?;
+                Ast::Cons(Op::While, vec![cond, block])
+            }
+            // special case II: class | var
+            // need assert! (same with fn)
+            // ident is token literal
+            Token {
+                kind: TokenKind::Class,
+                ..
+            } => {
+                let token = self.lexer.expect(TokenKind::Ident, "in this lhs")?;
+                assert!(token.kind == TokenKind::Ident);
+                let ident = Ast::Atom(Atom::Ident(token.origin));
                 if lhs.kind == TokenKind::Var {
-                    if !matches!(first_cons, Ast::Atom(Atom::Ident(_))) {
-                        todo!()
-                    }
+                    let _ = self.lexer.expect(TokenKind::Equal, "in this lhs");
                 }
 
-                match self.lexer.next() {
-                    Some(Ok(token)) if token.kind == TokenKind::Equal => {}
-                    Some(Ok(token)) => {
-                        return Err(miette::miette! {
-                            labels = vec![
-                                LabeledSpan::at(token.offset..token.offset + token.origin.len(), "this identifier literal")
-                            ],
-                           help = "Expected =",
-                           "Malform var assignment",
-                        }.with_source_code(self.whole.to_string())).wrap_err("Target operator error")?;
-                    }
-                    Some(Err(e)) => {
-                        return Err(e).wrap_err("Target operator error")?;
-                    }
-                    None => {
-                        return Err(Eof).wrap_err("Target operator error")?;
+                let block = self.parse_block()?;
+                Ast::Cons(Op::Class, vec![ident, block])
+            }
+            Token {
+                kind: TokenKind::Var,
+                ..
+            } => {
+                let token = self.lexer.expect(TokenKind::Ident, "in this lhs")?;
+                assert!(token.kind == TokenKind::Ident);
+                let ident = Ast::Atom(Atom::Ident(token.origin));
+                let _ = self.lexer.expect(TokenKind::Equal, "in this lhs");
+                let block = self.parse_block()?;
+                Ast::Cons(Op::Var, vec![ident, block])
+            }
+            // special case III: fn
+            // need to derive args_list (peek + check end)
+            // need to derive token to break
+            Token {
+                kind: TokenKind::Fn,
+                ..
+            } => {
+                let token = self.lexer.expect(TokenKind::Ident, "in this lhs")?;
+                assert!(token.kind == TokenKind::Ident);
+                let ident = Atom::Ident(token.origin);
+                let _paran_list = self.parse_fn_args();
+                let _ = self.lexer.expect(TokenKind::LeftParen, "in this lhs");
+                let block = self.parse_block()?;
+                if lhs.kind == TokenKind::Var {
+                    let _ = self.lexer.expect(TokenKind::Equal, "in this lhs");
+                }
+                let mut args_list = vec![];
+                if matches!(
+                    self.lexer.peek(),
+                    Some(Ok(Token {
+                        kind: TokenKind::RightParen,
+                        ..
+                    }))
+                ) {
+                } else {
+                    loop {
+                        let argument = self.parse_expr(1)?;
+                        args_list.push(argument);
+                        let token = self.lexer.expect_where(
+                            |token| matches!(token.kind, TokenKind::Comma | TokenKind::RightParen),
+                            "continue",
+                        )?;
+                        // until run into ')'
+                        if token.kind == TokenKind::RightParen {
+                            break;
+                        }
                     }
                 }
-
-                let second_cons = self
-                    .parse_expr_within(min_bp)
-                    .wrap_err_with(|| format!("In {op:?} expression"))?;
-                Ast::Cons(op, vec![first_cons, second_cons])
-            }
-            //TBD: Prefix (triple)
-            Token {
-                kind: TokenKind::Fun,
-                ..
-            } => {
-                let op = match lhs.kind {
-                    TokenKind::Fun => Op::Fun,
-                    _ => unreachable!("OB"),
-                };
-                let first_cons = self
-                    .parse_expr_within(in_bp)
-                    .wrap_err_with(|| format!("In {op:?} expression"))?;
-                let second_cons = self
-                    .parse_expr_within(min_bp)
-                    .wrap_err_with(|| format!("In {op:?} expression"))?;
-                let third_cons = self
-                    .parse_expr_within(in_bp)
-                    .wrap_err_with(|| format!("In {op:?} expression"))?;
-                Ast::Cons(op, vec![first_cons, second_cons, third_cons])
-            }
-            //TBD: Prefix (quardruple)
-            Token {
-                kind: TokenKind::For | TokenKind::If,
-                ..
-            } => {
-                let op = match lhs.kind {
-                    TokenKind::Var => Op::Var,
-                    TokenKind::Fun => Op::Fun,
-                    _ => unreachable!("OB"),
-                };
-                let first_cons = self
-                    .parse_expr_within(min_bp)
-                    .wrap_err_with(|| format!("In {op:?} expression"))?;
-                let second_cons = self
-                    .parse_expr_within(min_bp)
-                    .wrap_err_with(|| format!("In {op:?} expression"))?;
-                let third_cons = self
-                    .parse_expr_within(min_bp)
-                    .wrap_err_with(|| format!("In {op:?} expression"))?;
-                Ast::Cons(op, vec![first_cons, second_cons, third_cons])
-            }
-
-            // Group
-            Token {
-                kind: TokenKind::LeftParen | TokenKind::LeftBrace,
-                ..
-            } => {
-                let terminator = match lhs.kind {
-                    TokenKind::LeftParen => TokenKind::RightParen,
-                    TokenKind::LeftBrace => TokenKind::RightBrace,
-                    _ => unreachable!("OB"),
-                };
-                let lhs = self
-                    .parse_expr_within(min_bp)
-                    .wrap_err("bracket expression")?;
-
-                // find the terminator in expr
-                match self.lexer.next() {
-                    Some(Ok(token)) if token.kind == terminator => {}
-                    Some(Ok(token)) => {
-                        return Err(miette::miette! {
-                            labels = vec![
-                                LabeledSpan::at(token.offset..token.offset + token.origin.len(), "this identifier literal")
-                            ],
-                           help = "Expecting {terminator:?}",
-                           "Unexpected terminator",
-                        }.with_source_code(self.whole.to_string())).wrap_err("Target operator error")?;
-                    }
-                    Some(Err(e)) => {
-                        return Err(e).wrap_err("Target operator error")?;
-                    }
-                    None => {
-                        return Err(Eof).wrap_err("Target operator error")?;
-                    }
+                Ast::Fn {
+                    name: ident,
+                    paran_list: args_list,
+                    definition_block: Box::new(block),
                 }
-                lhs
             }
+            // special case IV: if
+            // otherwiser init to None
+            // if run into else, return nothing (if not parse on)
             Token {
-                kind: TokenKind::LeftParen | TokenKind::LeftBrace,
+                kind: TokenKind::If,
                 ..
             } => {
-                let terminator = match lhs.kind {
-                    TokenKind::LeftParen => TokenKind::RightParen,
-                    TokenKind::LeftBrace => TokenKind::RightBrace,
-                    _ => unreachable!("OB"),
-                };
-                let lhs = self
-                    .parse_expr_within(min_bp)
-                    .wrap_err("bracket expression")?;
-                match self.lexer.next() {
-                    Some(Ok(token)) if token.kind == terminator => {}
-                    Some(Ok(token)) => {
-                        return Err(miette::miette! {
-                            labels = vec![
-                                LabeledSpan::at(token.offset..token.offset + token.origin.len(), "this identifier literal")
-                            ],
-                           help = "Expected {terminator:?}",
-                           "Unexpected terminator",
-                        }.with_source_code(self.whole.to_string())).wrap_err("Target operator error")?;
-                    }
-                    Some(Err(e)) => {
-                        return Err(e).wrap_err("Target operator error")?;
-                    }
-                    None => {
-                        return Err(Eof).wrap_err("Target operator error")?;
-                    }
+                let _ = self.lexer.expect(TokenKind::LeftParen, "in this lhs");
+                let cond = self.parse_expr(1)?;
+                let _ = self.lexer.expect(TokenKind::RightParen, "in this lhs");
+                let block = self.parse_block()?;
+                let mut otherwise = None;
+                if matches!(
+                    self.lexer.peek(),
+                    Some(Ok(Token {
+                        kind: TokenKind::Else,
+                        ..
+                    }))
+                ) {
+                    // TODO
+                    otherwise = Some(self.parse_block().wrap_err("in body of else")?);
+                } else {
+                    self.lexer.next();
                 }
-                lhs
-            }
-            Token {
-                kind: TokenKind::LeftParen | TokenKind::LeftBrace,
-                ..
-            } => {
-                let terminator = match lhs.kind {
-                    TokenKind::LeftParen => TokenKind::RightParen,
-                    TokenKind::LeftBrace => TokenKind::RightBrace,
-                    _ => unreachable!("OB"),
-                };
-                let lhs = self
-                    .parse_expr_within(min_bp)
-                    .wrap_err("bracket expression")?;
-                match self.lexer.next() {
-                    Some(Ok(token)) if token.kind == terminator => {}
-                    Some(Ok(token)) => {
-                        return Err(miette::miette! {
-                            labels = vec![
-                                LabeledSpan::at(token.offset..token.offset + token.origin.len(), "this identifier literal")
-                            ],
-                           help = "Expected {terminator:?}",
-                           "Unexpected terminator",
-                        }.with_source_code(self.whole.to_string())).wrap_err("Target operator error")?;
-                    }
-                    Some(Err(e)) => {
-                        return Err(e).wrap_err("Target operator error")?;
-                    }
-                    None => {
-                        return Err(Eof).wrap_err("Target operator error")?;
-                    }
+                Ast::If {
+                    predicate: Box::new(cond),
+                    exiting_block: Box::new(block),
+                    exit_block: otherwise.map(Box::new),
                 }
-                lhs
             }
+            _ => unreachable!("abc"),
         };
-
+        // handle infix & postfix
+        // need loop to keep track of c_onwards (literal scanner)
         loop {
             let op = self.lexer.peek();
-            if op.is_err() {
-                return Err(self
-                    .lexer
-                    .next()
-                    .expect("checked some")
-                    .expect_err("check err"));
-            }
-            let op = match op.map(|res| res.expect("handle above err")) {
+            // 2 special cases: call + access
+            let op = match op.map(|res| res.as_ref().expect("handle err")) {
                 None => break,
                 Some(Token {
-                    kind:
-                        TokenKind::LeftParen
-                        | TokenKind::Dot
-                        | TokenKind::Minus
-                        | TokenKind::Plus
-                        | TokenKind::Star
-                        | TokenKind::BangEqual
-                        | TokenKind::EqualEqual
-                        | TokenKind::LessEqual
-                        | TokenKind::GreaterEqual
-                        | TokenKind::Less
-                        | TokenKind::Greater
-                        | TokenKind::Slash
-                        | TokenKind::And
-                        | TokenKind::Or,
+                    kind: TokenKind::LeftParen,
                     ..
-                }) => op,
-                t => panic!("bad token: {:?}", t),
+                }) => Op::Call,
+                Some(Token {
+                    kind: TokenKind::Dot,
+                    ..
+                }) => Op::Field,
+                Some(token) => return Err(miette::miette! {
+                labels = vec![
+                    // derive source after token
+                    LabeledSpan::at(token.offset..token.offset + token.origin.len(), "this ident literal")
+                ],
+                help = format!("expected {token:?}"),
+                "expect operator"
+            }.with_source_code(self.span.to_string())),
             };
-
-            if let Some((l_bp, ())) = postfix_binding_power(op) {
+            // call
+            if let Some((l_bp, ())) = postfix_bp(&op) {
                 if l_bp < min_bp {
                     break;
                 }
-                lexer.next();
-
-                lhs = if op == '[' {
-                    assert_eq!(lexer.next(), Token::Op(']'));
-                    Ast::Cons(op, vec![lhs, rhs])
-                } else {
-                    Ast::Cons(op, vec![lhs])
+                self.lexer.next();
+                lhs = match op {
+                    Op::Call => Ast::Call {
+                        arguments: self.parse_fn_args()?,
+                        callee: Box::new(lhs),
+                    },
+                    _ => Ast::Cons(op.clone(), vec![lhs]),
                 };
-                continue;
             }
-
-            if let Some((l_bp, r_bp)) = infix_binding_power(op) {
+            // access
+            if let Some((l_bp, r_bp)) = infix_bp(&op) {
                 if l_bp < min_bp {
                     break;
                 }
-                lexer.next();
-
-                lhs = if op == '?' {
-                    assert_eq!(lexer.next(), Token::Op(':'));
-                    Ast::Cons(op, vec![lhs, mhs, rhs])
-                } else {
-                    Ast::Cons(op, vec![lhs, rhs])
-                };
-                continue;
+                self.lexer.next();
+                let rhs = self.parse_expr(r_bp)?;
+                return Ok(Ast::Cons(op, vec![lhs, rhs]));
             }
         }
+        Ok(lhs)
+    }
+    // block is a combination of stmts
+    // block is identified by '{' in parse_stmt()
+    pub fn parse_block(&mut self) -> Result<Ast<'de>, Error> {
+        let _ = self.lexer.expect(TokenKind::LeftBrace, "missing {");
+        let block = self.parse_stmt(1)?;
+        let _ = self.lexer.expect(TokenKind::RightBrace, "missing {");
+        Ok(block)
+    }
+    // Need loop
+    // args_list is identified by ')'
+    pub fn parse_fn_args(&mut self) -> Result<Vec<Ast<'de>>, Error> {
+        let mut args_list = vec![];
+        if matches!(
+            self.lexer.peek(),
+            Some(Ok(Token {
+                kind: TokenKind::RightParen,
+                ..
+            }))
+        ) {
+        } else {
+            loop {
+                let argument = self.parse_expr(1)?;
+                args_list.push(argument);
+                let token = self.lexer.expect_where(
+                    |token| matches!(token.kind, TokenKind::Comma | TokenKind::RightParen),
+                    "continue",
+                )?;
+                if token.kind == TokenKind::RightParen {
+                    break;
+                }
+            }
+        }
+        Ok(args_list)
+    }
+    // used in main
+    pub fn parse(mut self) -> Result<Ast<'de>, Error> {
+        self.parse_stmt(0)
     }
 }
 
-// Pos of operator in proportion to operands
-fn prefix_binding_power(op: Op) -> ((), u8) {
-    match op {
+// take Op and return bp (NO Option)
+// priority in expression should never be equal between (lhs, rhs)
+// always have to lookahead over entire span to identify if a drop to decide on priority (but NOT
+// drop below min_bp: 1)
+// prefix api has NO Option<> since will always bind rhs
+fn prefix_bp(op: Op) -> ((), u8) {
+    let op = match op {
         Op::Return | Op::Print => ((), 1),
-        Op::Bang | Op::Minus => ((), 11),
-        _ => panic!("Bad op: {:?}", op),
-    }
-}
-
-fn infix_binding_power(op: Op) -> Option<(u8, u8)> {
-    let res = match op {
-        Op::Equal => (2, 1),
-        Op::EqualEqual | Op::GreaterEqual | Op::LessEqual | Op::Greater | Op::Less => (5, 6),
-        Op::Plus | Op::Minus => (7, 8),
-        Op::Star | Op::Slash => (9, 10),
-        Op::Field => (16, 15),
-        _ => return None,
+        Op::Bang => ((), 10),
+        Op::Minus => ((), 9),
+        _ => panic!("Oops"),
     };
-    Some(res)
+    op
 }
-
-fn postfix_binding_power(op: Op) -> Option<(u8, ())> {
-    let res = match op {
+// NOT always bind both lhs/rhs
+fn infix_bp(op: &Op) -> Option<(u8, u8)> {
+    let op = match op {
+        Op::Plus => (1, 2),
+        Op::Minus => (3, 4),
+        Op::Star => (5, 6),
+        Op::Slash => (7, 8),
+        Op::Dot => (11, 12),
+        _ => panic!("Oops"),
+    };
+    Some(op)
+}
+// NOT always bind lhs
+fn postfix_bp(op: &Op) -> Option<(u8, ())> {
+    let op = match op {
         Op::Call => (13, ()),
-        _ => return None,
+        _ => panic!("Oops"),
     };
-    Some(res)
+    Some(op)
 }
