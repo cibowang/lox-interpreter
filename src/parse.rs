@@ -120,7 +120,7 @@ pub enum Atom<'de> {
 }
 
 // for num, need to consider x.0
-// no escape to consider for string in Display
+// no escape allowed
 impl<'de> Display for Atom<'de> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

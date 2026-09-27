@@ -1,3 +1,29 @@
+Why Lox programming lamguage?
+
+    Learn by doing:
+        challenge yourself to implement a new parser in Rust
+        familarize yourself with AST lowering, binding power & more
+
+    Fullly-support guidance: 
+        expert code sample & annotation to get you started in no time
+        comprehensive & spot-on leanrning tutorial for free access
+
+What is Lox programming language?
+
+    An P2P distributed system libary
+    API
+        lexer(tokenizer)
+        parser
+
+How to use?
+
+    clone maelstrom client (no setup/prerequisite needed)
+        https://github.com/jepsen-io/maelstrom
+    follow the maelstrom protocol & challenge instruction on fly.io
+        https://github.com/jepsen-io/maelstrom/blob/main/doc/protocol.md
+        https://fly.io/dist-sys/
+    run native command to verify the correctness of implementation
+
 [![progress-banner](https://backend.codecrafters.io/progress/interpreter/4139bfa9-13c9-4bdc-8267-6b0d688fb846)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
 
 This is a starting point for Rust solutions to the
